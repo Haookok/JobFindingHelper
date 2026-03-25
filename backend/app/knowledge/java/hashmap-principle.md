@@ -6,37 +6,32 @@
 
 ## 核心概念
 
-`HashMap` 基于**哈希表**：底层是 **Node 数组**，每个桶（bucket）存放键值对节点。当哈希冲突导致同一桶内元素过多时，JDK8 在链表长度超过阈值（默认 8）且数组长度 ≥ 64 时，将链表**树化为红黑树**；在删除或 resize 后若树节点过少会**退化为链表**，以兼顾平均 O(1) 与最坏情况下的对数级查找。
+HashMap 就像一排**带编号的储物柜**。你有一堆东西要存，每样东西有个标签（key）。HashMap 先把标签变成一个编号（哈希值），再根据编号找到对应的柜子放进去。取的时候也是——算编号、开柜子、拿东西，所以平均只要 O(1)。
 
-`put` 时先对 key 做**扰动后的哈希**（高 16 位与低 16 位异或），再 `(n - 1) & hash` 定位下标（`n` 为 2 的幂，等价于取模且更快）。桶为空则直接放入；否则比较 key 是否相等或 `equals`，链表则尾插（JDK8），树则按比较器/Comparable 走树查找。
+但如果两样东西算出了同一个柜号怎么办？这就是**哈希冲突**。JDK8 的 HashMap 解决方式是：同一个柜子里先按**链表**排队，排队的人超过 8 个就升级成**红黑树**（查找从 O(n) 优化到 O(log n)）。
 
 ## 详细解析
 
-**扩容（resize）**：当 `size > capacity * loadFactor`（默认负载因子 0.75）时触发。新容量为旧容量的 **2 倍**，节点重新分布。JDK8 优化：根据 `hash & oldCap` 判断元素落在**原索引**还是 **原索引 + oldCap**，避免重新计算全部哈希，提高效率。
+### put 一个值的全过程（大白话版）
 
-**哈希冲突**：开放寻址法 vs 链地址法；`HashMap` 采用**链地址法**（链表/红黑树）。**负载因子**权衡空间与冲突概率：0.75 在统计上较均衡。
+1. **算编号**：对 key 的 hashCode 做一次"扰动"（高 16 位和低 16 位异或），让编号更分散
+2. **找柜子**：用 `编号 & (柜子数-1)` 算出下标（柜子数是 2 的幂，所以这等价于取余但更快）
+3. **柜子是空的**：直接放进去
+4. **柜子有人了**：逐个比 key 是否相等（先比 hashCode 再比 equals）。找到了就更新 value；没找到就排到链表末尾（JDK8 尾插法）
+5. **链表太长**：超过 8 个且数组长度 ≥ 64，链表升级为红黑树
+6. **柜子太挤**：总元素超过 `容量 × 0.75`（负载因子），整排柜子翻倍扩容
 
-**JDK7 vs JDK8**：JDK7 头插法在并发 resize 时可能形成**环形链表**导致死循环；JDK8 改为尾插，并引入红黑树缓解长链表。JDK8 仍**非线程安全**；`ConcurrentHashMap` 等用于并发场景。
+### 扩容——搬家
 
-**线程安全**：多线程同时 `put`/扩容可能导致数据丢失、死循环（JDK7）或读写不一致；应用层可用 `Collections.synchronizedMap`、`ConcurrentHashMap` 或外部锁。
+柜子翻倍后，所有东西要重新分配位置。JDK8 有个巧妙优化：每个元素只需要看 `hash & 旧容量` 这一位是 0 还是 1——0 就留在原位，1 就搬到 `原位+旧容量` 的新位置。不用重新算所有哈希。
 
-**`get` 流程**：对 key 计算与 `put` 相同的哈希与下标；桶空返回 `null`；否则在链表或红黑树中按 `equals`（及 `compareTo`）查找。`containsKey` 与 `get` 逻辑一致，不依赖 `value`。
+### JDK7 的坑——并发死循环
 
-**null 键值**：`HashMap` 允许 **一个 null 键**（固定放在下标 0 的桶或特殊处理）与**多个 null 值**；`ConcurrentHashMap`（JDK8+）不允许 null 键值，避免并发下二义性（无法区分「不存在」与「值为 null」）。
+JDK7 用的是**头插法**：扩容搬家时，链表顺序会反转。多线程同时扩容时，可能形成**环形链表**——之后 get 操作就会死循环。JDK8 改成**尾插法**避免了这个问题，但 **HashMap 仍然不是线程安全的**！多线程要用 `ConcurrentHashMap`。
 
-**与 `equals`/`hashCode` 契约**：相等对象必须同哈希；可变对象作 key 并在哈希相关字段被改后会**找不到条目**，属于设计层面的坑。
+### equals 和 hashCode 的契约
 
-**时间复杂度**：平均 `get/put` 为 O(1)；最坏情况下（哈希碰撞极端或全落同桶且未树化前）链表为 O(n)，树化后为 O(log n)。面试可强调「工程实现通过扩容与树化控制最坏情况」。
-
-**与 `IdentityHashMap` 对比**：后者用 `System.identityHashCode` 与引用相等，语义与业务 `equals` 不同，用于序列化、图算法等少数场景。
-
-**快速复述 put 八步（口述版）**：算 hash → 定位下标 → 桶空则新建节点 → 否则首元素 key 命中则替换 value → 否则链表/树查找 → 插入并检查树化 → 检查扩容 → 返回旧 value 或 null。
-
-**`LinkedHashMap` 补充**：在 `HashMap` 基础上维护**双向链表**顺序，支持插入顺序或访问顺序（LRU 常用后者重写 `removeEldestEntry`）。底层仍依赖哈希表定位，只是额外维护链表指针。
-
-**`computeIfAbsent` 等**：JDK8+ 提供的原子语义方法在实现上使用 `synchronized` 锁住单个桶或内部锁（因版本与实现细节而异），面试可答「减少重复计算但仍需理解并发 Map 选 `ConcurrentHashMap`」。
-
-**序列化与 `table` 不序列化**：反序列化后按需懒扩容；面试若问「为何反序列化后结构可能不同」，可答懒初始化与阈值重新计算。
+自定义对象做 key 时，**必须同时重写 equals 和 hashCode**。如果两个对象 equals 相等但 hashCode 不同，它们会被放到不同的柜子里——put 了一个，get 用"相等"的另一个却找不到。
 
 ## 示例代码
 
@@ -46,35 +41,26 @@ import java.util.Map;
 
 public class HashMapDemo {
     public static void main(String[] args) {
+        // 初始容量 16，负载因子 0.75（超过 16*0.75=12 个元素就扩容）
         Map<String, Integer> map = new HashMap<>(16, 0.75f);
-        map.put("a", 1);
-        map.put("a", 2); // 覆盖同 key
-        int h = map.getOrDefault("b", 0);
-        System.out.println(map.size() + " " + h);
+        map.put("a", 1);    // 算 "a" 的哈希 → 找柜子 → 放进去
+        map.put("a", 2);    // 同一个 key → 找到柜子里的 "a" → 更新 value 为 2
+        int h = map.getOrDefault("b", 0);  // "b" 不存在，返回默认值 0
+        System.out.println(map.size() + " " + h);  // 输出: 1 0
     }
 }
 ```
 
-面试时可口述：`hashCode` → 扰动 → 下标；equals 契约与 `hashCode` 一致性的重要性。
-
-可手写简化版：自定义 `Student` 作 key 时，`hashCode` 用 `id+name` 稳定字段，`equals` 比较相同字段，并说明**不要**把可变 `List` 放进 `hashCode`。
-
-**`remove` 与 `replace`**：同样先定位桶再在链表/树中查找；返回被删 value 或 boolean 取决于 API；树节点过少时退链需满足 `UNTREEIFY_THRESHOLD`。
-
-**`clear`**：遍历桶置空并 `size=0`，不保证缩容；若需释放大数组引用，可重新 `new HashMap` 替换原引用。
-
 ## 面试追问
 
-- **追问 1**：为什么容量必须是 2 的幂？`(n-1)&hash` 与取模的关系、扩容时重哈希如何只依赖 `hash & oldCap`？
-- **追问 2**：红黑树阈值为什么是 8、链表阈值为什么是 6（泊松分布与树化/反树化）？`TREEIFY_THRESHOLD` 与 `UNTREEIFY_THRESHOLD` 为何不同？
-- **追问 3**：`HashMap` 与 `Hashtable`、`LinkedHashMap`、`ConcurrentHashMap` 在迭代、null 键值、并发上的差异？
-- **追问 4**：`resize` 时为何可能死循环（JDK7）？`modCount` 与 `fail-fast` 迭代器在什么情况下抛 `ConcurrentModificationException`？
+- **面试官可能会这样问你**：为什么容量必须是 2 的幂？（`(n-1) & hash` 等价于取余但更快；扩容时只需要看一位就能决定新位置）
+- **面试官可能会这样问你**：红黑树阈值为什么是 8？（泊松分布下，单个桶里有 8 个元素的概率已经非常小了，约千万分之六）
+- **面试官可能会这样问你**：HashMap、Hashtable、ConcurrentHashMap 有什么区别？（Hashtable 全方法加 synchronized，性能差；ConcurrentHashMap 用分段锁/CAS 更精细；HashMap 不线程安全但单线程最快）
+- **面试官可能会这样问你**：JDK8 改成尾插法后就线程安全了吗？（不！多线程 put 仍可能丢数据或读到不一致状态，只是不会死循环了）
 
 ## 常见误区
 
-- 认为 JDK8 头插改尾插后 `HashMap` 就**线程安全**了——仍非线程安全，只是避免了 JDK7 的典型死循环场景。
-- 自定义 key 只重写 `equals` 不重写 `hashCode`，导致**相同逻辑对象**落到不同桶，表现为「找不到已 put 的键」。
-- 把「负载因子调很小」当成万能药：会降低冲突但**浪费内存**、更频繁扩容；默认 0.75 有统计学依据。
-- 在 foreach 中**边遍历边非迭代器安全地修改**结构，误以为偶尔不报错就是安全——应使用迭代器 `remove` 或换并发集合。
-- 初始容量传「预期元素个数」却忽略负载因子：`threshold = capacity * loadFactor`，仅按元素个数设 cap 仍会频繁扩容。
-- 误以为 `keySet()`/`values()` 返回独立集合副本——实为**视图**，底层仍指向同一 `HashMap`，修改会相互影响。
+- **很多人会搞混的地方**：以为 JDK8 改了尾插法 HashMap 就线程安全了——只是避免了死循环，数据丢失和不一致照样有。
+- **很多人会搞混的地方**：自定义 key 只重写 equals 不重写 hashCode——两个"相等"的对象落到不同桶里，put 进去 get 不出来。
+- **很多人会搞混的地方**：`new HashMap(100)` 能装 100 个元素不扩容——实际上容量会被调整为 128（最近的 2 的幂），阈值是 128×0.75=96，超过 96 个就扩容。
+- **很多人会搞混的地方**：在 foreach 里直接 `map.remove()`——会触发 `ConcurrentModificationException`，应该用迭代器的 remove 方法。

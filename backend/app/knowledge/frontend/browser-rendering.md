@@ -6,75 +6,63 @@
 
 ## 核心概念
 
-浏览器把 **HTML** 解析成 **DOM 树**，把 **CSS** 解析成 **CSSOM**；二者结合生成 **渲染树（Render Tree）**——只包含需要绘制的节点（如 `display:none` 不在树内）。接着进行 **布局（Layout/Reflow）** 计算几何信息，再 **绘制（Paint）** 填充像素，最后 **合成（Composite）** 各层交由 GPU 显示。
+浏览器把网页画到屏幕上的过程，就像**盖房子**：先拿到**设计图纸**（HTML → DOM 树），再拿到**装修方案**（CSS → CSSOM），然后把两份图纸合并成**施工图**（渲染树）。接着**量尺寸、定位置**（布局/Layout），再**刷油漆、贴壁纸**（绘制/Paint），最后**各层叠在一起**交给 GPU 显示（合成/Composite）。
 
-**关键渲染路径（CRP）** 指从收到 HTML/CSS 到首屏可见的关键步骤；阻塞资源（同步 JS、头部 CSS）会延长 **First Paint** / **FCP**。
+**关键渲染路径（CRP）** 就是从拿到 HTML 到用户看见第一帧画面的这条关键链路。任何阻塞这条链路的东西（没加 defer 的 JS、头部的大 CSS 文件）都会让用户多等。
 
 ## 详细解析
 
-**DOM 构建**：词法分析 → Token → 节点树；遇到 `<script>` 默认**阻塞解析**（除非 `defer`/`async`/`module` 等策略）。
+**第一步：画图纸（DOM + CSSOM）**。浏览器一边下载 HTML 一边解析成 DOM 树。遇到 `<script>` 标签会**停下来**等 JS 执行完（因为 JS 可能改 DOM），除非你加了 `defer` 或 `async`。CSS 也必须解析完才能确定样式，所以 CSS 也是"渲染阻塞"的。
 
-**CSSOM**：样式具有层叠与继承，必须解析完相关 CSS 才能确定最终样式；故 CSS 常被视为渲染阻塞。
+**第二步：合并施工图（渲染树）**。把 DOM 和 CSSOM 合在一起，但 `display:none` 的元素不在施工图里（它压根不需要画），而 `visibility:hidden` 的元素在（只是透明的，位置还占着）。
 
-**渲染树**：与 DOM 不完全一一对应（如 `head` 一般不绘制）；每个节点带样式与几何需求。
+**第三步：量尺寸（布局/Reflow）**。算每个盒子的大小和位置。这一步**代价很高**——改了某个元素的宽高，可能导致一连串邻居都要重新算。这就是"重排"。
 
-**布局**：计算盒模型与位置；宽度依赖包含块，高度可能依赖子元素（文档流）。
+**第四步：刷油漆（绘制/Repaint）**。把颜色、文字、边框、阴影画出来。如果你只改了颜色没改大小，就只需要重绘不需要重排——代价小一些。
 
-**绘制**：生成绘制记录（文本、颜色、边框、阴影等）；可分层。
+**第五步：合成（Composite）**。有些元素（用了 `transform`、`opacity`、`will-change`）会被提到单独的"图层"。这些图层的变化可以直接交给 GPU 处理，不用回主线程重新布局和绘制，所以动画特别丝滑。
 
-**合成层**：某些属性（如 `transform`、`opacity`、有 `will-change` 提示等）可能提升为 **Compositor Layer**，后续改动可走合成线程，减少主线程重绘范围。**注意**：滥用 `will-change` 会占显存。
+**重排 vs 重绘**：改宽高、边距、字体 → 触发重排（最贵）。只改颜色、背景 → 触发重绘。用 transform/opacity 做动画 → 走合成层（最便宜）。
 
-**重排（Reflow）**：布局相关属性变化导致几何重算，代价高。**重绘（Repaint）**：外观变但布局不变（如 `color`）可能只需重绘。`transform`/`opacity` 常可走合成，避开完整布局。
+**Layout Thrashing——最常见的性能杀手**：在循环里一边读布局属性（offsetTop）一边改样式，浏览器每次读都要先算完布局才能给你值，变成了"算一下-改一下-又算一下"的死循环。解决办法：先批量读，再批量写。
 
-**CRP 优化**：压缩与内联关键 CSS、异步/延后 JS、预加载关键资源、减少关键路径深度、字体与图片策略等。
-
-**主线程 vs 合成线程**：布局与绘制多在主线程；合成层更新可由 **Compositor Thread** 与 GPU 完成，故动画用 `transform`/`opacity` 更易保持流畅（仍要注意层数量与内存）。
-
-**容易触发重排的典型读写**：`offset*`、`client*`、`scroll*`、`getComputedStyle` 等可能迫使浏览器先完成布局再返回值；若在循环里读布局再写样式，会形成 **layout thrashing**。
-
-**资源优先级**：`preload`/`prefetch`/`preconnect` 影响发现与握手时机，与 CRP 协同；图片 `loading="lazy"` 降低首屏竞争。
-
-**面试表达顺序**：DOM/CSSOM → Render Tree → Layout → Paint → Composite；再举 **重排 vs 重绘** 与 **合成层**；最后落到 **CRP 与性能指标**，并各说一条优化手段。
+**CRP 优化三板斧**：关键 CSS 内联或优先加载、JS 用 defer/async 不阻塞解析、预加载关键资源（preload/preconnect）。
 
 ## 示例代码
 
 ```html
-<!-- 关键 CSS 内联或优先加载，非关键延后 -->
+<!-- 关键字体预加载，非关键 JS 延后 -->
 <link rel="preload" href="/fonts.woff2" as="font" crossorigin />
 <style>
-  /* 首屏关键样式 */
+  /* 首屏关键样式内联，减少额外请求 */
   .hero { font-size: 2rem; }
 </style>
-<script defer src="/app.js"></script>
+<script defer src="/app.js"></script>  <!-- defer：不阻塞解析，DOMContentLoaded 前执行 -->
 ```
 
 ```css
-/* 动画优先用合成友好属性，减少重排 */
+/* 动画用 transform 走合成层，而不是改 top/left 触发重排 */
 .card {
-  will-change: transform;
+  will-change: transform;           /* 提前告诉浏览器"这个元素会动" */
   transition: transform 0.3s ease;
 }
 .card:hover {
-  transform: translateY(-4px);
+  transform: translateY(-4px);      /* GPU 直接处理，不经过重排 */
 }
 ```
 
 ## 面试追问
 
-- **追问 1**：`display:none` 与 `visibility:hidden` 对渲染树与布局的影响有何不同？
-- **追问 2**：为什么修改 `offsetTop` 的读取与写入顺序会引发「强制同步布局（forced reflow）」？
-- **追问 3**：合成层一定更快吗？什么情况下层过多反而伤性能？
-- **追问 4**：`requestIdleCallback` / `requestAnimationFrame` 与渲染帧的关系？
+- **面试官可能会这样问你**：`display:none` 和 `visibility:hidden` 对渲染树和布局有什么区别？
+- **面试官可能会这样问你**：为什么在循环里交替读 offsetTop、改 style 会特别慢？这叫什么？
+- **面试官可能会这样问你**：合成层一定更快吗？什么情况下图层太多反而伤性能？
+- **面试官可能会这样问你**：requestIdleCallback 和 requestAnimationFrame 分别在渲染帧的什么时候执行？
 
 ## 常见误区
 
-- 认为「所有样式改动都只触发重绘」——改宽高、边距、`display`、字体等会触发布局乃至重排连锁；单纯改 `color` 通常影响较小但仍可能触发绘制。
-- 把 `will-change` 长期挂在大量元素上——应短期提示、用后移除。
-- 忽略 **JS 执行** 与解析阻塞：长任务同样推迟首屏与交互响应（需结合 Performance 面板分析）。
-- 认为「`opacity: 0` 与 `visibility` 一样」——不参与点击、可合成行为仍有差异，SEO/无障碍也要单独考虑。
-- 只优化 CSS 不拆分 **长任务**：主线程仍可能被 `while` 或大 JSON 阻塞，需 `scheduler`、Web Worker 等配合。
-- **GPU 层不是免费午餐**：过大纹理、过多层合成会带来内存与合成开销，移动端尤其明显。
-- 混淆 **FP/FCP/LCP**：首屏优化要分别看首次绘制、首次内容绘制、最大内容绘制，指标对应优化手段不同（字体、图片、SSR 等）。
-
-**延伸阅读**：Chrome DevTools **Performance** 里 Main、Raster、GPU 轨道；**Lighthouse** 与 Web Vitals 报告解读。能结合一次真实录屏说瓶颈点，面试说服力更强。
-同一页面在低端机与省电模式下的帧率差异，也可作为「渲染与合成成本」的延伸回答。
+- **很多人会搞混的地方**：以为"改任何样式都只是重绘"——改宽高、边距、display、字体这些都会触发重排，代价比重绘大得多。
+- **很多人会搞混的地方**：给一大堆元素都加 `will-change`——每个合成层都占显存，移动端尤其明显，滥用反而更卡。
+- **很多人会搞混的地方**：只优化 CSS 不管 JS——一个 while 死循环或者解析巨大 JSON 照样能卡死页面，主线程是共享的。
+- **很多人会搞混的地方**：以为 `opacity: 0` 和 `visibility: hidden` 一样——opacity:0 的元素还能接收点击事件，行为不同。
+- **很多人会搞混的地方**：混淆 FP、FCP、LCP 这些指标——它们分别衡量"第一次画了任何像素"、"第一次画了有意义的内容"、"最大内容块画完"，优化手段不一样。
+- **很多人会搞混的地方**：以为 GPU 加速是免费的——纹理太大、图层太多，GPU 内存不够用时反而更卡，在低端手机上尤其明显。

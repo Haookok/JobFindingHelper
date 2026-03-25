@@ -6,53 +6,48 @@
 
 ## 核心概念
 
-**类组件**通过生命周期方法响应挂载、更新、卸载（如 `componentDidMount`、`componentDidUpdate`、`componentWillUnmount`）。React 16.3+ 推荐使用 `getDerivedStateFromProps`、`getSnapshotBeforeUpdate` 等替代部分不安全的老生命周期。
+把一个 React 组件想象成**一个人的一天**：起床（挂载）→ 上班处理各种事（更新）→ 下班回家（卸载）。在每个阶段，你都有机会做特定的事——起床时刷牙洗脸（初始化数据），上班时根据新需求调整工作（响应 props/state 变化），下班前收拾桌面（清理定时器、取消请求）。
 
-**函数组件**无实例，用 **Hooks** 表达状态与副作用：`useState` 管理状态，`useEffect` 对接副作用（含「类组件里 DidMount + DidUpdate」的语义，通过依赖数组控制），`useMemo`/`useCallback` 缓存计算与函数引用以配合子组件 `memo` 优化。**Fiber** 是 React 16 起的协调引擎：把更新拆成可中断的工作单元，支持优先级与并发特性。
+**类组件**用生命周期方法来描述这些阶段（`componentDidMount` = 起床完毕、`componentDidUpdate` = 工作内容变了、`componentWillUnmount` = 下班收拾）。**函数组件**用 Hooks 做同样的事，但写法更简洁：`useState` 管状态，`useEffect` 处理副作用。
 
-**虚拟 DOM** 是 JS 对象描述的 UI 树；**diff** 在 Fiber 上通过「同层比较、key 标识可移动子节点」等启发式，尽量复用 DOM，减少真实更新。
+**虚拟 DOM** 就像一份"草稿"——React 先在草稿上画好 UI 该长什么样，然后跟上一版草稿对比（diff），只把**真正变了的部分**更新到真实页面上，省去了重画整张画的成本。
 
 ## 详细解析
 
-**类生命周期脉络**：挂载（constructor → render → commit → DidMount）→ 更新（New props/state → render → commit → DidUpdate）→ 卸载（WillUnmount）。`render` 须纯函数；副作用放 DidMount/DidUpdate 或 Hooks 的 effect。
+**类组件生命周期脉络**：构造函数 → render（画草稿）→ 挂载到页面 → DidMount。之后每次 props 或 state 变了，重新 render → DidUpdate。组件要被移除时，WillUnmount 做清理。记住：render 必须是"纯函数"，别在里面发请求或改状态。
 
-**Hooks 规则**：只在函数顶层调用；不在循环/条件里调用（保证 Hook 调用顺序稳定，与内部链表对应）。
+**Hooks 的规矩**：只能在函数组件**最顶层**调用，不能写在 if 或 for 里。为什么？因为 React 内部用一个**链表**按顺序记住每个 Hook 的状态。你一旦在条件里跳过某个 Hook，链表顺序就乱了，状态就张冠李戴了。
 
-**useEffect 依赖**：依赖数组缺失时每次渲染后都执行；空数组近似 DidMount；依赖变化才执行。`useLayoutEffect` 在 DOM 变更后、浏览器绘制前同步执行，适合测量布局。
+**useEffect 的依赖数组**：这是新手最容易踩坑的地方。空数组 `[]` 表示"只在起床时（挂载）执行一次"；写了具体变量就是"这些变量变了才执行"；什么都不写就是"每次渲染都执行"。`useLayoutEffect` 比 `useEffect` 执行得更早——页面画出来之前就跑了，适合量尺寸之类的事。
 
-**Fiber 与更新**：每次更新从根或优先级起点遍历 Fiber 树，可打断与恢复；`Concurrent Mode` 下低优先级更新可被高优先级打断。
+**Fiber——React 的"分时工作法"**：React 16 之前更新是一口气干完的，像一个人加班到天亮不休息。Fiber 把工作切成小块，可以中途暂停让浏览器先画个画面，再回来继续。这就是为什么 React 18 能做"并发特性"——高优先级的更新（比如用户输入）可以打断低优先级的（比如列表重渲染）。
 
-**Diff 要点**：不同类型元素整子树替换；同类型比较属性；列表用稳定 **key** 避免错误复用；这是 O(n) 启发式而非最优树编辑。
+**Diff 算法要点**：不同类型的元素直接整棵子树换掉；同类型的比属性；列表一定要用稳定的 **key**（别用 index），不然 React 会搞混谁是谁，就像点名时用"第一排第二个"而不是用姓名。
 
-**并发与过渡 API（React 18+）**：`startTransition` 将更新标为低优先级，避免输入等高优更新被大数据列表重渲染阻塞；`useDeferredValue` 延迟提交昂贵子树的 props。与 Fiber 的优先级调度一脉相承。
-
-**Strict Mode（开发环境）**：可能**故意双重调用**部分函数与 effect，用于暴露不纯副作用；与生产行为不同，面试时要能解释「为何本地 effect 跑两次」。
-
-**错误边界**：类组件 `componentDidCatch` / `getDerivedStateFromError` 捕获子树渲染错误；Hooks 组件需用边界组件包裹，错误边界本身不能用 Hooks 写（历史 API 限制，面试提一句即可）。
-
-**渲染流程（简述）**：触发更新 → **Render 阶段**（可打断，构建 Fiber 子树，纯计算）→ **Commit 阶段**（应用 DOM、执行 layout effect、浏览器绘制相关）。Hooks 的 `useState` 在 render 中执行，`useEffect` 在 commit 后异步刷出。
-
-**面试串联**：从「类生命周期」说到「Hooks 等价语义」，再说到「Fiber 为何需要」与「diff + key」，最后提并发特性，体现体系感。
+**Strict Mode 的坑**：开发环境下 React 会故意把 useEffect 跑两次，用来帮你发现不纯的副作用。别慌，生产环境只跑一次。
 
 ## 示例代码
 
 ```jsx
 function Profile({ userId }) {
   const [data, setData] = useState(null);
+
+  // useCallback：userId 不变时，fetchUser 引用不变，避免 useEffect 白跑
   const fetchUser = useCallback(() => {
     return fetch(`/api/user/${userId}`).then((r) => r.json());
   }, [userId]);
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false;  // 防止组件卸载后还 setState（竞态问题）
     fetchUser().then((d) => {
       if (!cancelled) setData(d);
     });
     return () => {
-      cancelled = true;
+      cancelled = true;  // "下班收拾"：组件卸载或 userId 变了，取消旧请求的回调
     };
   }, [fetchUser]);
 
+  // useMemo：只有 data 变了才重新计算 label，省点力气
   const label = useMemo(() => (data ? data.name : '加载中'), [data]);
   return <div>{label}</div>;
 }
@@ -60,21 +55,16 @@ function Profile({ userId }) {
 
 ## 面试追问
 
-- **追问 1**：`useEffect` 与 `useLayoutEffect` 在提交阶段的时间点差异？什么场景必须用 `useLayoutEffect`？
-- **追问 2**：为什么 Hooks 不能写在 if 里？React 如何用链表保存 Hook 状态？
-- **追问 3**：Fiber 的「可中断更新」如何减少长任务阻塞？与 `Scheduler` 的关系？
-- **追问 4**：`useMemo` 和 `useCallback` 何时反而浪费？和 `React.memo` 如何配合？
+- **面试官可能会这样问你**：useEffect 和 useLayoutEffect 到底差在哪？什么情况下非用 useLayoutEffect 不可？
+- **面试官可能会这样问你**：为什么 Hooks 不能写在 if 里？React 内部是怎么用链表记住状态的？
+- **面试官可能会这样问你**：Fiber 的"可中断更新"是怎么减少页面卡顿的？和 Scheduler 什么关系？
+- **面试官可能会这样问你**：useMemo 和 useCallback 什么时候反而是浪费？怎么跟 React.memo 配合？
 
 ## 常见误区
 
-- 认为 `useEffect(fn, [])` 与类组件 DidMount **完全等价**——函数组件无「只挂载一次」的闭包陷阱需注意，遗漏依赖会导致陈旧闭包；props/state 在 effect 内若未列入依赖，易出现「点击计数永远用初值」类 bug。
-- 把 `useMemo` 当万能性能药——比较成本与缓存收益要权衡。
-- 列表用 **index 作 key** 在重排/插入时导致错误复用与状态错乱。
-- 混淆「虚拟 DOM 更快」——价值主要在声明式 UI 与批量更新，不等于比原生 DOM 手写一定快。
-- 在 effect 里发请求却不做 **cleanup / abort**，导致竞态下旧请求覆盖新数据。
-- 把 `key` 设在非列表根或随意拼接字符串，破坏复用与性能诊断。
-- **`useRef` 与渲染**：改 `ref.current` 不触发重渲染，适合保存定时器 id、上一次的值；需要 UI 反映变化仍要用 `useState`。
-- **自定义 Hooks**：只是函数复用，不自带「额外渲染隔离」；错误仍沿调用栈传播，需遵守同样 Hooks 规则。
-
-**延伸阅读**：官方文档 Rules of Hooks、`useSyncExternalStore`（外部 store 订阅）、`useId`（SSR 与可访问性）。进阶岗位可准备 **React Compiler** 与自动 memo 方向。
-可与状态管理（Redux/Zustand）对比：库是否在 React 外存状态、如何用订阅触发渲染。
+- **很多人会搞混的地方**：以为 `useEffect(fn, [])` 和类组件的 DidMount 完全一样——函数组件有"闭包陷阱"，如果 effect 里用了某个 state 但没放进依赖数组，你拿到的永远是初始值，就像时钟停了一样。
+- **很多人会搞混的地方**：把 useMemo 当万能加速器——它本身也有比较成本，如果计算本来就很便宜，加了 useMemo 反而多此一举。
+- **很多人会搞混的地方**：列表用 index 当 key——增删或重排时，React 会把状态搞混。比如你删了第一项，第二项的状态却跑到第一项上了。
+- **很多人会搞混的地方**：说"虚拟 DOM 比真实 DOM 快"——不准确。虚拟 DOM 的价值是让你**声明式**地写 UI，React 帮你算出最小更新量，但它不一定比手写 DOM 操作快。
+- **很多人会搞混的地方**：在 useEffect 里发请求但不做清理——如果用户快速切换页面，旧请求的结果可能覆盖新数据。一定要在 cleanup 里取消或标记。
+- **很多人会搞混的地方**：改了 `ref.current` 以为页面会更新——ref 是"暗箱操作"，改它不会触发重渲染，想让页面变就得用 useState。

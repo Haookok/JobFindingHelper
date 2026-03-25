@@ -6,76 +6,59 @@
 
 ## 核心概念
 
-**容器**不是虚拟机：它与宿主机共享内核，通过 **Linux Namespace** 隔离进程视图（PID、NET、MNT、USER 等），通过 **Cgroups** 限制与计量 CPU、内存、IO 等资源。**UnionFS（联合文件系统）** 与 **分层镜像** 叠加只读层与可写容器层，实现镜像复用与快速启动。
+Docker 容器就像**打包好的外卖盒**：把你的应用代码、依赖库、运行环境全部封在一个盒子里。不管是在你的笔记本上、同事的电脑上还是云服务器上，打开就能跑，不用再操心"我这里能跑你那里跑不了"。
 
-**Docker 引擎**（containerd/runc 等链路）负责镜像拉取、OCI 运行时创建容器、网络与卷挂载。**Dockerfile** 描述构建步骤；**多阶段构建**用前一阶段编译产物复制到精简运行镜像，减小攻击面与体积。
+但容器**不是虚拟机**。虚拟机像是在一栋楼里重新盖了一间完整的房子（带自己的地基和水电），而容器更像是同一栋楼里的隔间——共用地基和水电（共享操作系统内核），只是用隔板把各个租户分开。所以容器启动快、占用资源少，但隔离性没虚拟机强。
 
 ## 详细解析
 
-**Namespace**：`pid` 隔离进程 ID；`net` 独立网络栈（接口、路由、iptables）；`mnt` 挂载点视图；`ipc`、`uts`、`user` 等分别隔离 IPC、主机名、UID/GID 映射（rootless 依赖 user namespace）。
+**隔间怎么做的？三大核心技术**：
 
-**Cgroups v1/v2**：限制 CPU share/quota、内存上限、blkio、pids 数量等；OOM 时容器内进程可能被杀。理解 **limits vs requests**（K8s 语境）前先掌握 Docker 的 `--cpus`、`--memory`。
+**Namespace（隔板）**：让容器看到的"世界"是独立的——PID namespace 让容器觉得自己的进程是从 1 号开始的，NET namespace 给容器独立的网卡和 IP，MNT namespace 给它独立的文件目录。各个隔间互相看不见对方。
 
-**镜像分层**：每条 Dockerfile 指令常产生一层；层缓存要求 **顺序稳定** 与 **把易变层置后**。`COPY`/`ADD` 前尽量少改以命中缓存。**镜像 digest** 唯一标识内容寻址层。
+**Cgroups（水电表）**：给每个容器分配 CPU、内存、磁盘 IO 的配额。超了就限制（CPU 限流）或者杀进程（内存 OOM）。就像给每个隔间装了独立水电表，用多少付多少，用超了就断。
 
-**Dockerfile 实践**：选 **官方 slim/alpine** 需权衡 libc 兼容与调试工具；合并 `RUN` 减少层数但可读性下降需平衡；**非 root 用户** `USER` 运行；`HEALTHCHECK` 声明健康探测；敏感信息用 **build secret / 运行时挂载**，勿 `ARG` 泄露进历史层。
+**UnionFS（千层蛋糕式文件系统）**：Docker 镜像像千层蛋糕——底层是操作系统（比如 Alpine Linux），上面一层是你装的 Python，再上面是你的代码。每层是只读的，容器运行时在最上面加一层可写层。多个容器可以共用底下的只读层，省空间。
 
-**多阶段构建**：构建阶段装编译器与依赖，最终阶段只拷贝二进制与静态资源，避免把源码与密钥留在镜像。
+**Dockerfile——外卖的配方**：用文本描述"怎么做这个外卖盒"。选基础镜像（FROM）、装依赖（RUN）、拷贝代码（COPY）、设启动命令（ENTRYPOINT）。**多阶段构建**是个好习惯：先在一个大锅（编译环境）里煮好菜，然后只把成品装进小盒子（精简运行镜像），编译器和源码都不带走。
 
-**网络模式**：**bridge** 默认 NAT，容器有独立 IP；**host** 共享宿主机网络栈，性能高但端口冲突；**none** 无网卡；**overlay**（Swarm/K8s CNI）跨主机虚拟二层。**自定义网络**提供 DNS 容器名解析。
+**网络模式**：**bridge**（默认）给每个容器分配独立 IP，通过 NAT 访问外网；**host** 直接用宿主机的网络，性能好但端口会冲突；**none** 完全没网。
 
-**数据卷**：**bind mount** 绑定宿主机路径，适合开发；**named volume** 由 Docker 管理，适合持久化数据。**只读挂载** `ro` 降低篡改风险。
+**数据卷**：容器是"用完即扔"的，数据不能存在容器里。把数据放到**卷（Volume）**里，就像把重要文件存在移动硬盘上，容器删了数据还在。
 
-**安全加固**：最小镜像、只读根文件系统、capability 降级（`--cap-drop`）、seccomp/AppArmor/SELinux、镜像扫描（CVE）、不在镜像内放 `.env` 密钥、定期更新基础镜像。
-
-**OCI 与运行时**：**OCI 镜像规范** 与 **runc** 等运行时创建隔离进程；**containerd** 作为守护进程管理镜像与容器生命周期，Docker CLI 与 K8s 在多数发行版上最终都落到类似链路。面试可说清 **「镜像 = 只读层 + 配置元数据」**。
-
-**`.dockerignore`**：排除 `.git`、`node_modules`、本地构建产物，减小 build context 上传时间并避免误拷机密。**构建缓存** 在 CI 中可配合 **BuildKit cache mount**（`--mount=type=cache`）加速依赖安装。
-
-**日志与进程**：容器内 **PID 1** 需正确处理信号（如使用 `tini`/`dumb-init` 或 Go 程序自身转发 SIGTERM）；日志应写 **stdout/stderr** 由运行时收集，避免写满容器可写层。
-
-**资源与 ulimit**：除 Cgroups 外，注意 **nofile** 等 ulimit；高并发服务在 compose/K8s 中需一并调优，否则「本地能跑、容器里 accept 失败」。
-
-**镜像签名与供应链**：**Docker Content Trust**、**cosign** 等对镜像验签；拉取策略用 digest 固定版本，避免 `:latest` 漂移导致不可复现与投毒风险。
+**安全加固**：不要用 root 跑服务（万一被入侵影响更大）、用最小镜像减少攻击面、不要把密钥写进镜像、定期扫描镜像漏洞。
 
 ## 示例代码
 
 ```dockerfile
-# syntax=docker/dockerfile:1
+# 多阶段构建示例：编译环境和运行环境分开
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download          # 先下载依赖（利用层缓存）
 COPY . .
 RUN CGO_ENABLED=0 go build -o /app -trimpath -ldflags="-s -w" ./cmd/server
 
+# 运行阶段：只拷贝编译好的二进制文件，镜像非常小
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /app /app
-USER nonroot:nonroot
+COPY --from=build /app /app  # 只拿成品，源码和编译器都不带
+USER nonroot:nonroot          # 不用 root 跑，更安全
 ENTRYPOINT ["/app"]
 ```
 
-说明：多阶段 + distroless 减小体积与 shell 攻击面；`nonroot` 降低权限。
-
-**Compose 与 Swarm（了解）**：单机编排用 Compose；Swarm 提供简易集群与 overlay。与 K8s 相比，Swarm 组件更少但生态与扩展性较弱，面试可对比 **控制平面复杂度与 CNI 生态**。
-
-**排查思路**：`docker inspect` 看挂载与网络；`docker logs` 看应用输出；`docker stats` 看 Cgroups 限额是否触顶；进入容器用 `docker exec` 时注意 **生产环境勿依赖交互 shell 排障常态化**。
-
 ## 面试追问
 
-- **追问 1**：容器与 KVM/VM 在隔离强度、性能、内核共享上的根本差异？
-- **追问 2**：写时复制（CoW）在镜像层与容器可写层如何工作？删除文件为何可能产生 whiteout？
-- **追问 3**：bridge 网络下容器访问外网的 NAT 路径？host 模式对端口绑定与安全的影响？
-- **追问 4**：为什么 Dockerfile 里 `RUN apt-get update && install` 常写在一行？缓存失效链路是什么？
-- **追问 5**：rootless Docker 依赖哪些内核能力？与特权容器 `--privileged` 风险对比？
+- **面试官可能会这样问你**：容器和虚拟机的根本区别是什么？隔离性、性能、内核共享这三方面怎么比？
+- **面试官可能会这样问你**：Docker 镜像的"写时复制"是什么意思？删除文件为什么反而可能让镜像变大（whiteout）？
+- **面试官可能会这样问你**：bridge 模式下容器怎么访问外网？host 模式有什么安全隐患？
+- **面试官可能会这样问你**：为什么 Dockerfile 里 `RUN apt-get update && install` 常写在同一行？跟缓存有什么关系？
+- **面试官可能会这样问你**：rootless Docker 是什么？`--privileged` 为什么很危险？
 
 ## 常见误区
 
-- 把容器当 **轻量 VM** 忽视 **内核共享**：宿主机内核漏洞影响所有容器。
-- **镜像层缓存** 被 `COPY . .` 提前打散，导致每次构建全量重装依赖。
-- **Alpine + glibc 混用** 引发奇怪段错误；动态链接需一致 libc。
-- **容器内以 root 跑服务** 与宿主机 **目录 777 bind mount** 扩大入侵后果。
-- 认为 **多阶段构建** 自动安全——若 `COPY --from=build` 误拷入密钥或 `.git`，仍会泄漏。
-- **PID 1 是 shell 脚本** 且未 `exec` 主进程——信号达不到应用，优雅退出失效。
-- **`docker run --privileged` 等同大幅削弱隔离**——除非确有必要，生产应禁止或白名单 cap。
-- **卷权限与 UID 映射** 混乱——bind mount 宿主机目录与容器 `USER` UID 不一致导致读写失败或权限过大。
+- **很多人会搞混的地方**：把容器当轻量虚拟机——容器共享宿主机内核，宿主机内核有漏洞，所有容器都受影响。
+- **很多人会搞混的地方**：`COPY . .` 放太前面——这条指令之后的所有层缓存都会失效，导致每次改一行代码就要重新装所有依赖。应该先 COPY 依赖文件，再 COPY 代码。
+- **很多人会搞混的地方**：用 Alpine 镜像但应用需要 glibc——Alpine 用的是 musl libc，有些程序会莫名段错误，排查起来很头疼。
+- **很多人会搞混的地方**：容器里用 root 跑服务还把宿主机目录设成 777——被入侵后攻击者可以直接读写宿主机文件。
+- **很多人会搞混的地方**：以为多阶段构建自动安全——如果最终阶段不小心 COPY 了密钥或 .git 目录，照样泄漏。
+- **很多人会搞混的地方**：容器里 PID 1 是个 shell 脚本但没用 exec——信号到不了真正的应用进程，优雅退出就失效了。

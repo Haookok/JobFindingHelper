@@ -6,45 +6,46 @@
 
 ## 核心概念
 
-Kubernetes 是 **控制平面 + 数据平面（节点）** 的分布式系统：**API Server** 为统一入口，校验与持久化期望状态到 **etcd**；**Controller Manager** 内各类控制器通过 watch/informer **调谐（reconcile）** 实际状态；**Scheduler** 为 Pending Pod 绑定节点。**Node** 上 **kubelet** 驱动容器运行时创建 Pod，**kube-proxy**（或 eBPF 等实现）维护 Service 到端点的转发规则。
+如果 Docker 是"打包好的外卖盒"，那 Kubernetes（K8s）就是**管理整个外卖平台的调度中心**。它负责：这个外卖派给哪个骑手（调度到哪台服务器）？骑手翻车了怎么重新派单（容器挂了自动重启）？高峰期怎么多叫几个骑手（自动扩缩容）？新菜品怎么平滑上线（滚动更新）？
 
-**Pod** 是最小调度单元，共享网络与存储卷；**生命周期**含 Pending、Running、Succeeded/Failed 等。**Service** 提供稳定虚拟 IP/DNS 与负载均衡到 Pod。**Deployment** 管理无状态副本滚动升级；**StatefulSet** 有序与稳定网络标识；**DaemonSet** 每节点（或子集）一份 Pod。
+K8s 分两部分：**控制平面**（总部大脑）和**数据平面**（干活的节点）。总部制定策略和决策，节点执行命令和跑容器。
 
 ## 详细解析
 
-**API Server**：认证（证书、Bearer Token、OIDC）、授权（RBAC）、准入（Mutating/Validating Webhook）；所有组件仅通过其访问集群状态，避免直连 etcd（除 etcd 运维）。
+**控制平面——总部有四个关键角色**：
 
-**etcd**：一致性与高可用 KV；存集群元数据与资源对象。备份与恢复策略是运维面试常考点。
+**API Server（前台接待）**：所有请求的唯一入口。你想创建服务、查看状态、改配置，都得先过它。它负责身份验证（你是谁）、权限检查（你能干嘛）、数据校验。
 
-**Scheduler**：过滤（资源、亲和性、污点容忍）与打分（资源均衡、亲和）；可扩展 **调度框架**。**kubelet**：拉取镜像、探针（liveness/readiness/startup）、挂载卷、上报节点与 Pod 状态。
+**etcd（档案室）**：一个分布式键值数据库，存着整个集群"应该是什么样"的期望状态。API Server 收到请求后把数据存到 etcd。备份 etcd 几乎等于备份了整个集群。
 
-**Pod 生命周期**：创建 → 调度 → 拉镜像 → init 容器 → 主容器；**重启策略** `Always`/`OnFailure`/`Never`。**终止**：先发 SIGTERM，宽限期后 SIGKILL；需应用优雅关闭连接。
+**Controller Manager（各种管理员）**：一堆"管理员"不断对比"期望状态"和"实际状态"。比如 Deployment Controller 发现"我期望有 3 个副本但只有 2 个在跑"，就会创建一个新的。这种"不断检查并修正"的思路叫**调谐（Reconcile）**。
 
-**Service 类型**：**ClusterIP** 集群内；**NodePort** 节点端口暴露；**LoadBalancer** 云 LB；**ExternalName** CNAME。**Headless Service**（`clusterIP: None`）配合 StatefulSet 做 DNS 逐 Pod 解析。
+**Scheduler（派单员）**：新创建的 Pod 还没被分配到节点时，Scheduler 根据资源余量、亲和性规则、污点容忍等条件，选出最合适的节点把 Pod "派"过去。
 
-**Deployment**：ReplicaSet 管理版本；滚动参数 `maxSurge`/`maxUnavailable`。**StatefulSet**：稳定 hostname、有序扩缩、常与 PVC 模板配合。**DaemonSet**：日志、监控、CNI 等节点级代理。
+**数据平面——每个节点上两个关键角色**：
 
-**HPA**：依据 CPU/内存或自定义指标（Metrics API / Prometheus Adapter）扩缩 Deployment/StatefulSet 等；需 metrics-server 或自定义 metrics 管道；存在 **冷却/抖动** 与 **延迟** 需注意。
+**kubelet（骑手）**：每个节点上的代理，收到"派单"后负责拉取镜像、创建容器、做健康检查（liveness/readiness 探针）、上报状态。
 
-**RBAC**：`Role`/`ClusterRole` 绑定 `RoleBinding`/`ClusterRoleBinding` 到 User/Group/ServiceAccount；**最小权限**为安全基线；与 **ABAC/Node** 授权模式对比时强调 RBAC 为主流。
+**kube-proxy（路由表）**：维护 Service 到 Pod 的转发规则，让流量能找到正确的容器。
 
-**CNI 与网络插件**：Calico/Cilium/Flannel 等实现 Pod 网段、路由与策略网络；**NetworkPolicy** 在 L3/L4 限制东西向流量，默认放行需显式加固。**Service 与 EndpointSlice** 将标签匹配的 Pod 端点暴露给 kube-proxy 或数据面。
+**Pod——最小的"外卖订单"**：一个 Pod 里可以有一个或多个容器，它们共享网络和存储。Pod 重建后 IP 会变，所以需要 Service 提供稳定的访问入口。
 
-**CRD 与 Operator**：**CustomResourceDefinition** 扩展 API；**Operator** 模式用控制器管理有状态应用生命周期（备份、升级）。**准入 Webhook** 可强制安全策略（镜像仓库、资源配额、标签规范）。
+**常见工作负载**：**Deployment** 管无状态服务（比如 Web API），支持滚动更新和回滚；**StatefulSet** 管有状态服务（比如数据库），每个 Pod 有固定的名字和存储；**DaemonSet** 在每个节点上跑一份（比如日志收集器）。
 
-**存储**：**CSI** 插件对接云盘/NFS；**PV/PVC** 抽象存储供给。**ConfigMap/Secret** 挂载为卷或环境变量，Secret 仅 base64 编码非加密，需 etcd 加密与 RBAC 保护。
+**HPA（自动扩缩容）**：根据 CPU、内存或自定义指标自动调整 Pod 数量。高峰期多开几个，低谷期收回去省钱。
 
-**可观测性**：**cAdvisor** 指标经 kubelet 暴露；控制平面组件日志与审计（Audit Policy）用于合规与入侵分析。
+**RBAC（权限控制）**：谁能看什么、改什么，通过 Role 和 RoleBinding 精细控制。原则是**最小权限**——只给需要的权限。
 
 ## 示例代码
 
 ```yaml
+# 一个最基本的 Deployment：跑 2 个副本，限制了资源
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: demo
 spec:
-  replicas: 2
+  replicas: 2                # 期望跑 2 个 Pod
   selector:
     matchLabels:
       app: demo
@@ -58,30 +59,26 @@ spec:
         - name: app
           image: demo:1.0.0
           resources:
-            requests:
+            requests:         # "我至少需要这么多"——调度器参考
               cpu: 100m
               memory: 128Mi
-            limits:
+            limits:           # "最多给我这么多"——超了就限流/杀进程
               memory: 256Mi
 ```
 
-说明：`requests` 供调度与 HPA 参考，`limits` 防资源失控；生产应配 probe 与 PDB。
-
 ## 面试追问
 
-- **追问 1**：Informer/Lister 相对直接 watch API Server 的优势？如何避免 relist 风暴？
-- **追问 2**：kube-proxy iptables 与 ipvs 模式差异？Service 会话亲和性如何实现？
-- **追问 3**：Pod 一直 Pending 时如何排查？哪些事件与调度失败相关？
-- **追问 4**：Deployment 滚动更新失败如何回滚？`maxUnavailable` 为 0 时语义？
-- **追问 5**：HPA 与 VPA、Cluster Autoscaler 分工？自定义指标链路有哪些组件？
+- **面试官可能会这样问你**：Informer 比直接 watch API Server 好在哪？怎么避免 relist 风暴？
+- **面试官可能会这样问你**：kube-proxy 的 iptables 模式和 ipvs 模式有什么区别？
+- **面试官可能会这样问你**：Pod 一直 Pending 怎么排查？常见原因有哪些？
+- **面试官可能会这样问你**：Deployment 滚动更新失败了怎么回滚？maxUnavailable 设为 0 是什么意思？
+- **面试官可能会这样问你**：HPA、VPA、Cluster Autoscaler 分别管什么？怎么配合？
 
 ## 常见误区
 
-- 认为 **Pod IP 稳定**——重建即变；持久访问依赖 Service 或 StatefulSet DNS。
-- **readiness 与 liveness 配反**——未就绪流量切入或死循环重启加剧故障。
-- **给所有容器超大 limits** 导致 **节点超卖与噪声邻居**，调度看似成功运行 OOM。
-- **ClusterRoleBinding 过宽**（如 cluster-admin 给默认 SA）造成横向移动风险。
-- 忽略 **etcd 备份** 与 **API Server 证书轮换**，灾难恢复演练缺失。
-- 把 **Secret 当加密存储**——默认可被有权限者解码；应配合 **EncryptionConfiguration** 与密钥管理。
-- **NetworkPolicy 未部署却以为默认拒绝**——多数插件默认全通，需显式编写策略。
-- **自定义 CRD 无版本迁移与校验**——集群升级时出现不可调和字段，引发控制器崩溃。
+- **很多人会搞混的地方**：以为 Pod IP 是稳定的——Pod 一重建 IP 就变了，要用 Service 或 StatefulSet 的 DNS 来访问。
+- **很多人会搞混的地方**：把 readiness 和 liveness 探针配反——readiness 是"我准备好接客了没"（没准备好就不给流量），liveness 是"我还活着没"（死了就重启）。配反了要么未就绪就接了流量，要么活着却被不断重启。
+- **很多人会搞混的地方**：给所有容器设超大 limits——看起来调度成功了，但运行时节点超卖严重，大家互相抢资源频繁 OOM。
+- **很多人会搞混的地方**：把 Secret 当加密存储——Secret 默认只是 base64 编码，能解码看到明文，需要配合 etcd 加密和 RBAC 保护。
+- **很多人会搞混的地方**：以为 NetworkPolicy 默认就是"全部拒绝"——大多数 CNI 插件默认全通，你不写 NetworkPolicy 就等于没有网络隔离。
+- **很多人会搞混的地方**：忽略 etcd 备份——etcd 存了整个集群的灵魂，它挂了又没备份，集群等于从零开始。

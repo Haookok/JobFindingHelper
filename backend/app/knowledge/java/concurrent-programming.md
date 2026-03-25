@@ -6,35 +6,40 @@
 
 ## 核心概念
 
-**synchronized** 是 JVM 内置监视器锁：字节码层 `monitorenter/exit`，可重入，锁升级路径（偏向 → 轻量 → 重量）由 JVM 优化。**ReentrantLock** 是 API 级显式锁，支持**公平/非公平**、可中断、`tryLock`、条件变量 `Condition`，基于 **AQS** 实现。
+Java 并发编程就像**多人同时用一个厨房做饭**。厨房就那么大，灶台就那么几个，如果不协调好谁用哪个灶台、谁先用菜板，轻则菜做乱了（数据不一致），重则两人互相等对方让开谁都动不了（死锁）。
 
-**volatile** 保证**可见性**与**有序性**（禁止部分重排序），不保证复合操作的原子性。**CAS**（Compare-And-Swap）由 CPU 指令支持，是乐观无锁的基础；ABA 问题可用版本号/`AtomicStampedReference` 缓解。
-
-**AQS**（AbstractQueuedSynchronizer）用 **CLH 变体队列**管理阻塞线程，`state` 表示资源状态，`ReentrantLock`、`Semaphore`、`CountDownLatch` 等均在其上扩展。
+Java 提供了两套"协调方案"：**synchronized**（厨房自带的规矩——进来就锁门）和 **ReentrantLock**（你自己带的高级锁——可以设超时、可以排队、可以分读写）。还有 **volatile**（在灶台上贴个便签"我改了温度"让所有人看到），以及 **CAS**（乐观派：先做了再说，发现被人改了就重试）。
 
 ## 详细解析
 
-**线程池**（`ThreadPoolExecutor`）核心参数：`corePoolSize`、`maximumPoolSize`、`keepAliveTime`、`workQueue`、`threadFactory`、`handler`。任务提交流程：核心线程 → 队列 → 最大线程 → 拒绝策略。`Executors` 便捷工厂创建的固定/单线程池若用**无界队列**可能堆积任务导致 OOM，生产环境常自定义队列与边界。
+### synchronized vs ReentrantLock
 
-**ThreadLocal** 为每个线程提供独立副本，底层是 `Thread` 的 `ThreadLocalMap`（弱引用 key）。**内存泄漏**风险：线程池中长期存活的线程若未 `remove()`，可能持有已失效 ThreadLocal 的条目；用完应 `remove()`。
+- **synchronized**：JVM 内置的锁，写起来简单（直接加在方法或代码块上）。JVM 会自动做锁升级：偏向锁→轻量级锁→重量级锁，性能已经不错了
+- **ReentrantLock**：手动加锁解锁，但功能更强——可以设超时（`tryLock`）、可以响应中断、可以选公平/非公平、可以绑多个条件变量
 
-`synchronized` vs `ReentrantLock`：语法糖 vs 灵活 API；锁升级后两者性能差距在多数场景已缩小，选型看是否需要中断、超时、公平、多条件。
+怎么选？简单场景用 synchronized；需要超时、中断、公平锁或多条件变量时用 ReentrantLock。
 
-**CAS 与自旋**：`Atomic*` 类在竞争不激烈时自旋成功避免阻塞；高竞争下自旋浪费 CPU，退化为系统调用或队列（因具体实现与 JVM 而异）。**伪共享**（cache line）在极致性能场景需 `@Contended` 或填充字段缓解。
+### volatile——"便签条"
 
-**读写场景**：`ReadWriteLock` / `StampedLock` 在读多写少时可提高并发度；写锁与读锁的升降级规则需说清楚避免死锁。
+volatile 保证两件事：**可见性**（一个线程改了值，其他线程立刻看到）和**有序性**（禁止指令重排序）。但它**不保证原子性**！`i++` 用 volatile 修饰是不安全的——因为 `i++` 实际上是"读-改-写"三步，中间可能被打断。
 
-**JUC 工具**：`CountDownLatch` 一次计数、`CyclicBarrier` 可重用栅栏、`Semaphore` 限流，均建立在 AQS 或类似同步语义上，面试常考「适用场景」。
+### CAS——乐观锁
 
-**happens-before 速记**：解锁先于后续加锁同监视器；`volatile` 写先于后续读；线程 `start` 先于子线程动作；线程内代码顺序在单线程语义下保持**as-if-serial**。
+CAS 的思路是：我想把值从 A 改成 B，改之前先看一眼是不是还是 A——是的话就改，不是就重试。`AtomicInteger` 等原子类就是基于 CAS 实现的。竞争不激烈时比加锁快得多，但竞争激烈时一直重试会浪费 CPU。
 
-**阻塞队列与线程池**：`ThreadPoolExecutor` 常配**有界** `BlockingQueue`，背压清晰；无界队列 + 固定线程数可能导致队列无限增长拖垮内存。
+### 线程池——别让厨房里人满为患
 
-**`ForkJoinPool`**：工作窃取适合**可分解**任务；与固定线程池相比在 CPU 密集分治（如并行 Stream 底层）更常见，需避免在任务中再嵌套阻塞式外部调用。
+`ThreadPoolExecutor` 的参数就像管理厨房人手：
+- **corePoolSize**：常驻厨师数量
+- **maximumPoolSize**：最忙的时候最多请几个厨师
+- **workQueue**：排队等灶台的订单队列
+- **handler**：队列也满了怎么办（拒绝策略）
 
-**`java.util.concurrent` 包设计思想**：基于 CAS + 队列减少内核态切换；高层工具类隐藏 AQS 细节，面试可从「共享资源 state + CLH 队列」串起 `ReentrantLock` 与 `Semaphore`。
+任务来了先看常驻厨师有没有空 → 没空就排队 → 队列也满了就临时请人 → 人也请满了就执行拒绝策略。**注意**：`Executors.newFixedThreadPool` 用的是无界队列，任务堆积可能导致 OOM！
 
-**中断协作式语义**：`interrupt()` 只设标志，需在任务中检查 `isInterrupted` 或对可中断阻塞方法响应；吞掉中断应恢复 `interrupt` 状态以便上层处理。
+### ThreadLocal——每人一个调料瓶
+
+ThreadLocal 给每个线程一个独立的变量副本，互不干扰。但在**线程池里要小心**：线程会被复用，上一个任务留下的 ThreadLocal 值可能被下一个任务读到。用完一定要 `remove()`！
 
 ## 示例代码
 
@@ -43,39 +48,36 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class ConcurrentDemo {
-    private static final AtomicInteger n = new AtomicInteger(0);
+    private static final AtomicInteger count = new AtomicInteger(0);  // CAS 实现的原子计数器
 
     public static void main(String[] args) throws Exception {
+        // 自定义线程池：2 个常驻、最多 4 个、队列容量 100、满了让调用者自己跑
         ExecutorService pool = new ThreadPoolExecutor(
             2, 4, 60L, TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(100),
+            new ArrayBlockingQueue<>(100),               // 有界队列！防止 OOM
             Executors.defaultThreadFactory(),
-            new ThreadPoolExecutor.CallerRunsPolicy());
+            new ThreadPoolExecutor.CallerRunsPolicy());  // 拒绝策略：谁提交谁执行
+
         for (int i = 0; i < 10; i++) {
-            pool.submit(() -> n.incrementAndGet());
+            pool.submit(() -> count.incrementAndGet());  // 原子加 1
         }
         pool.shutdown();
         pool.awaitTermination(5, TimeUnit.SECONDS);
-        System.out.println(n.get());
+        System.out.println(count.get());  // 10
     }
 }
 ```
 
-补充：`volatile boolean stop` 作线程协作停止标志时，工作线程需定期检查；若长时间卡在非响应中断的逻辑，仍需结合中断或任务拆解。
-
-**双检锁单例（了解）**：实例字段需 `volatile` 防止重排序看到未构造完成的对象；现代 JVM 有优化但仍属高频考点。
-
 ## 面试追问
 
-- **追问 1**：AQS 中 `acquire` / `release` 与 `state` 的关系？公平锁与非公平锁在队列上的差异（插队）？
-- **追问 2**：`volatile` 与 `synchronized` 在 JMM 下的内存语义（happens-before）分别是什么？
-- **追问 3**：`ThreadLocal` 父子线程如何传递上下文？`InheritableThreadLocal` 与线程池结合时的坑？
-- **追问 4**：`synchronized` 锁升级的触发条件与撤销？`ReentrantLock` 的 `Condition.await` 为什么要先持有锁？
+- **面试官可能会这样问你**：AQS 是什么？ReentrantLock 底层怎么实现的？（AQS 用一个 state 变量表示锁状态，用 CLH 队列管理等待线程；ReentrantLock 的 lock 就是尝试 CAS 改 state）
+- **面试官可能会这样问你**：volatile 和 synchronized 在 JMM 下的区别？（volatile 保证可见性和有序性但不保证原子性；synchronized 三者都保证）
+- **面试官可能会这样问你**：ThreadLocal 为什么会内存泄漏？（线程池里线程长期存活，ThreadLocalMap 的 key 是弱引用会被回收，但 value 是强引用不会——用完必须 remove）
+- **面试官可能会这样问你**：synchronized 的锁升级过程？（无锁→偏向锁（只有一个线程）→轻量级锁（短时间竞争，CAS 自旋）→重量级锁（竞争激烈，线程挂起））
 
 ## 常见误区
 
-- 用 `volatile` 修饰 `i++` 以为线程安全——**非原子**，需 `AtomicInteger` 或锁。
-- 线程池用 `shutdown()` 后仍提交任务会抛异常；应区分 `shutdown` 与 `shutdownNow`，并合理设置拒绝策略。
-- ThreadLocal 用完不 `remove`，在线程池场景下易导致**隐性内存泄漏**与错误数据复用。
-- `corePoolSize` 设为 0 且队列无界时误以为「不会创建线程」——提交流程仍会按需创建线程直至队列饱和策略生效，需对照源码理解。
-- 把 `submit` 返回的 `Future` **从不 get**，吞掉异常——应处理 `ExecutionException` 或改用 `execute`+明确异常处理。
+- **很多人会搞混的地方**：用 volatile 修饰 `i++` 以为线程安全——`i++` 不是原子操作，要用 `AtomicInteger`。
+- **很多人会搞混的地方**：线程池用完不 shutdown——线程一直活着，程序无法正常退出。
+- **很多人会搞混的地方**：ThreadLocal 用完不 remove——在线程池场景下会导致内存泄漏和数据串台。
+- **很多人会搞混的地方**：`submit` 的返回值 `Future` 从来不 get——异常被静默吞掉了，Bug 排查时一头雾水。

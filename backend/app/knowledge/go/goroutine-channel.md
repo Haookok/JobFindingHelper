@@ -6,29 +6,36 @@
 
 ## 核心概念
 
-**Goroutine** 是 Go 运行时管理的轻量级协程，栈初始很小并可动态伸缩，由调度器在用户态切换，成本远低于 OS 线程。**GMP 模型**中：`G` 表示 goroutine，`M` 表示 OS 线程（Machine），`P` 表示逻辑处理器（Processor），持有本地可运行队列并与 M 绑定执行 G；全局队列与 **work stealing** 平衡负载。
+**Goroutine 就是超轻量的小助手**。你有个任务要干，一句 `go doSomething()` 就派了一个小助手去做，成本极低——一个 goroutine 初始只占几 KB 栈内存，创建一百万个也没问题。而操作系统线程通常要几 MB。Go 的运行时用 **GMP 模型**调度这些小助手：G（goroutine）是任务，M（Machine）是 OS 线程，P（Processor）是调度器——P 从自己的任务队列里取 G 交给 M 执行，忙不过来还会去别的 P 那里"偷任务"（work stealing）。
 
-**Channel** 是类型安全的通信原语，贯彻「通过通信共享内存」。无缓冲 channel 发送与接收同步配对（handoff）；有缓冲 channel 在缓冲区未满时可异步发送，满则阻塞。**`select`** 在多个 channel 操作上多路复用，随机公平选择一个就绪分支，可配合 `default` 实现非阻塞。**`context.Context`** 用于取消与超时在调用链上向下传播，应只向下传、不存结构体长期持有。
+**Channel 是小助手之间的传话筒**——Go 的设计哲学是"别通过共享内存来通信，要通过通信来共享内存"。Channel 就是类型安全的消息管道。无缓冲 channel 是"面对面交接"——发送方必须等接收方到了才能交；有缓冲 channel 是"放进信箱"——信箱没满就能发，满了才等。
 
 ## 详细解析
 
-**调度要点**：阻塞 syscall 或长时间运行可能 **M 与 P 分离**（handoff），避免占满 P；`runtime.GOMAXPROCS` 控制可同时执行用户代码的 P 数量，默认接近 CPU 核数。抢占在较新版本通过 **异步抢占** 等机制改善长时间循环饿死其他 G 的问题。
+### GMP 调度——为什么 goroutine 这么快？
 
-**Channel 语义**：无缓冲强调「同步交付」，常用于信号与握手；有缓冲适合削峰、固定并发度。**关闭 channel** 后仍可接收剩余元素，再收得零值与 `false`；**仅发送方应关闭**，向已关闭 channel 发送会 panic。
+操作系统线程切换要进内核态，成本高。goroutine 的切换完全在用户态，Go 运行时自己管理。当一个 goroutine 遇到 I/O 阻塞时，P 会把它挂起，去执行其他 goroutine——OS 线程不会被浪费。这就是为什么 Go 能轻松处理百万级并发连接。
 
-**`select` 与超时**：`case <-ctx.Done()` 与 `time.After` 结合实现超时；注意 `time.After` 在循环内会泄漏 timer，长寿命场景优先 `time.NewTimer` 并复用或 `Stop`。
+### Channel 使用要点
 
-**Context 规范**：`context.WithCancel` / `WithTimeout` / `WithDeadline` 返回的 `cancel` 必须调用以防泄漏；不要把 `context` 放全局或当可选参数用 `nil` 混用，应显式传递。
+- **无缓冲 channel**：发送和接收必须同步配对，常用于信号通知和握手
+- **有缓冲 channel**：适合削峰填谷、控制并发度
+- **关闭 channel**：只有发送方应该关闭！接收方用 `for range ch` 或 `v, ok := <-ch` 判断是否关闭。向已关闭的 channel 发送数据会 **panic**
 
-**常见模式**：**fan-out** 一源多消费者并行；**fan-in** 多路结果汇聚到单一 channel；**worker pool** 固定 worker 从 job channel 取任务，控制并行度。**pipeline** 用 channel 链式阶段解耦。
+### select——同时盯多个传话筒
 
-**Goroutine 泄漏**：向无消费者 channel 永久阻塞发送、在 select 中遗漏 `ctx.Done()`、`http.Client` 未读尽 Body 导致连接与相关 goroutine 挂起、自引用闭包等。排查可用 **pprof goroutine**、`runtime.NumGoroutine()` 与代码审查 channel 生命周期。
+`select` 就像一个人同时盯着好几部电话，哪个先响就接哪个。多个 case 同时就绪时**随机选一个**（公平）。配合 `ctx.Done()` 可以实现超时和取消。
 
-**`sync.WaitGroup` 与 `errgroup`**：`WaitGroup` 适合「等一组 goroutine 结束」，注意 `Add` 要在启动前、`Done` 在 defer 中成对；`golang.org/x/sync/errgroup` 在带 `context` 的子任务出错时可取消兄弟任务，常与 **fan-in** 结合收集首个错误或全部结果。
+### Context——取消信号的传递链
 
-**同步原语选型**：保护小临界区用 `Mutex`/`RWMutex`；**一次性** 初始化用 `sync.Once`；限流除 channel 外可看 **semaphore**（如 `x/sync/semaphore`）。避免在持锁时向可能阻塞的 channel 发送，防止死锁。
+`context.WithTimeout` 就像设了个闹钟："5 秒内完成不了就别干了"。这个取消信号会沿着调用链往下传递。**规范**：context 作为第一个参数传递，不存结构体，cancel 函数必须调用（通常 `defer cancel()`）。
 
-**与 HTTP/下游服务**：出站请求应传 `req.WithContext(ctx)`，服务端 `ListenAndServe` 宜用 `http.Server` + `Shutdown` 配合 context 优雅退出，避免 goroutine 在进程退出时仍向已关闭资源写。
+### Goroutine 泄漏——最常见的坑
+
+goroutine 创建了但永远无法退出，越积越多最终耗尽资源。常见原因：
+- 向一个没人接收的 channel 发送，永久阻塞
+- select 里忘了处理 `ctx.Done()`
+- HTTP Body 没读完/没关闭，底层连接和 goroutine 挂起
 
 ## 示例代码
 
@@ -42,43 +49,39 @@ import (
 )
 
 func main() {
+	// 设个 2 秒的"闹钟"，超时自动取消
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	defer cancel()  // 不管怎样，最后都要释放资源
 
-	ch := make(chan int, 2)
+	ch := make(chan int, 2)  // 缓冲为 2 的"信箱"
 	go func() {
 		for i := 0; i < 3; i++ {
 			select {
-			case <-ctx.Done():
+			case <-ctx.Done():   // 闹钟响了，别发了
 				return
-			case ch <- i:
+			case ch <- i:        // 往信箱里放数据
 			}
 		}
-		close(ch)
+		close(ch)  // 发完了，关掉信箱
 	}()
 
-	for v := range ch {
+	for v := range ch {  // 从信箱里取，直到信箱关闭
 		fmt.Println(v)
 	}
 }
 ```
 
-说明：`buffer` 为 2 时前两次发送非阻塞；超时后发送侧通过 `ctx.Done()` 退出，避免无限阻塞。生产代码应处理 `ctx.Err()` 与资源清理。
-
 ## 面试追问
 
-- **追问 1**：G、M、P 各自职责是什么？M 阻塞时 P 如何被其他 M 接管？
-- **追问 2**：无缓冲与有缓冲 channel 在内存与调度上的差异？何时会触发 goroutine 阻塞？
-- **追问 3**：`select` 多个 case 同时就绪时语义是什么？如何实现「优先处理某一 channel」？
-- **追问 4**：`context.WithValue` 适用场景与反模式？为何不建议用 string 作为 key？
-- **追问 5**：如何用 worker pool 限制 QPS 与最大并发？与 errgroup 如何配合错误传播？
+- **面试官可能会这样问你**：G、M、P 各是什么？M 被系统调用阻塞了会怎样？（P 会和 M 解绑，找另一个空闲的 M 继续执行其他 G，不会浪费 P）
+- **面试官可能会这样问你**：无缓冲和有缓冲 channel 的区别？什么时候用哪个？（无缓冲=同步交接，用于信号和握手；有缓冲=异步队列，用于削峰和限流）
+- **面试官可能会这样问你**：select 多个 case 同时就绪时会怎样？怎么实现"优先处理某个 channel"？（随机选一个；如果要优先级，可以嵌套 select 或先用非阻塞尝试）
+- **面试官可能会这样问你**：怎么防止 goroutine 泄漏？（所有 goroutine 都要有退出路径，用 context 传递取消信号，用 pprof 监控 goroutine 数量）
+- **面试官可能会这样问你**：`WaitGroup.Add` 应该在哪里调用？（在启动 goroutine 之前！在 goroutine 内部 Add 可能导致 Wait 提前返回）
 
 ## 常见误区
 
-- 认为 **goroutine 极便宜** 就无限创建，忽视 channel、timer、HTTP 连接等配套资源导致 **泄漏与 FD 耗尽**。
-- **重复关闭 channel** 或 **多个发送方关闭** 引发 panic；应用 `sync.Once` 或单一 owner 关闭。
-- 在库函数内部 **`context.Background()` 盖掉调用方取消**，导致无法超时与级联取消。
-- **`select` 里用 `default` 忙等** 空转占满 CPU；应配合阻塞、backoff 或事件驱动。
-- 把 **mutex 与 channel 混用** 过度复杂化；简单共享状态用 `sync.Mutex`，消息传递用 channel，按场景选型。
-- **`WaitGroup.Add` 在 goroutine 内部才调用**——与并发启动竞态，可能 `Wait` 提前返回；应在父 goroutine 在 `go` 前 `Add`。
-- 认为 **`close(ch)` 会唤醒所有阻塞接收方并清空队列**——关闭只表示「不会再发送」，已缓冲数据仍可读完；向 nil channel 收发都会永久阻塞。
+- **很多人会搞混的地方**：以为 goroutine 不要钱就无限创建——goroutine 本身轻量，但配套的 channel、timer、HTTP 连接等资源不轻量，泄漏后果严重。
+- **很多人会搞混的地方**：多个发送方同时关闭 channel——会 panic！应该用 `sync.Once` 或保证只有一个 owner 关闭。
+- **很多人会搞混的地方**：在 select 里用 `default` 分支忙等——没有就绪的 case 时 default 会立刻执行，如果在循环里会疯狂空转吃满 CPU。
+- **很多人会搞混的地方**：在库函数里 `context.Background()` 覆盖了调用方传入的 ctx——这会让上层的超时和取消机制完全失效。

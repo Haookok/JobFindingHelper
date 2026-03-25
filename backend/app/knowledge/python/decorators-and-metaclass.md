@@ -6,53 +6,71 @@
 
 ## 核心概念
 
-**装饰器**本质是**可调用对象**，接受一个函数/类并返回替换或包装后的对象。语法糖 `@decorator` 等价于 `f = decorator(f)`。**带参数装饰器**需要多一层嵌套：外层接收装饰器参数，内层接收被装饰对象。
+**装饰器就像给礼物包装**。你有一个函数（礼物），装饰器在外面裹一层漂亮的包装纸（附加功能），但礼物本身没变。`@decorator` 就是 `f = decorator(f)` 的语法糖——把原函数传进去，拿到一个"包装后"的新函数。
 
-**functools.wraps** 把被包装函数的 `__name__`、`__doc__`、`__module__` 等拷贝到 wrapper，避免调试与文档字符串丢失。
-
-**`__new__`** 负责**创建实例**（调用父类 `object.__new__` 分配内存），**`__init__`** 负责**初始化已创建对象**。不可变类型（如某些内置类型子类）常需在 `__new__` 中处理。**元类**是「类的类」，默认 `type`，可控制类创建过程（如注册子类、校验属性、注入方法）。
+**元类就是"造模具的模具"**。普通的类（模具）用来造对象（产品），而元类用来造类本身。默认的元类是 `type`——当你写 `class Foo: ...` 的时候，Python 其实在调用 `type('Foo', (base,), {...})` 来创建 Foo 这个类。
 
 ## 详细解析
 
-**函数装饰器**：常见模式为 `def wrapper(*args, **kwargs): ... return wrapper`，内部调用原函数并附加日志、鉴权、缓存等。
+### 装饰器——从简单到带参数
 
-**类装饰器**：类本身可 `__call__`，或对类对象增删属性后返回原类/新类。
+**最简单的装饰器**：接收一个函数，返回一个新函数，中间加点料。
 
-**元类**：`metaclass=M` 时，类体执行完毕后调用 `M.__new__(M, name, bases, namespace)` 产出类对象；可与描述符、`__set_name__` 配合做 ORM 字段声明等框架行为。
+```python
+def log(func):
+    def wrapper(*args, **kwargs):
+        print(f"调用 {func.__name__}")
+        return func(*args, **kwargs)
+    return wrapper
 
-继承链中 `__new__` 与 `__init__` 的调用顺序：先子类 `__new__`，再（若返回实例）子类 `__init__`；若 `__new__` 返回非该类实例，**不会**自动调子类 `__init__`。
+@log
+def say_hello():
+    print("Hello!")
+# 等价于: say_hello = log(say_hello)
+```
 
-**描述符与装饰器组合**：`@property` 本质是描述符；类装饰器可在类创建后批量包装方法为 property 或注入校验逻辑。
+**带参数的装饰器**：需要多嵌套一层——外层接收参数，内层才是真正的装饰器。就像先选好包装纸的颜色，再去包礼物。
 
-**参数化类装饰器**：与函数装饰器同理，外层接收配置，内层接收类对象，返回修改后的类或代理类。
+**`functools.wraps` 为什么重要？** 不加它，被包装后的函数名会变成 `wrapper`，`help()` 和调试信息都乱了。`@wraps(func)` 把原函数的名字、文档等信息拷贝到 wrapper 上。
 
-**元类与 `__init_subclass__`**：Python 3.6+ 可在基类中定义 `__init_subclass__` 拦截子类创建，许多框架场景可替代自定义元类，降低魔法感。
+### `__new__` vs `__init__`
 
-**叠加装饰器**：靠近 `def` 的先生效：`@a @b def f` 等价于 `f = a(b(f))`，顺序影响日志、鉴权、缓存等外层行为。
+- `__new__`：**造房子**——负责创建实例（分配内存），返回一个对象
+- `__init__`：**搬家具**——负责初始化已经造好的实例，不返回任何东西
 
-**`__call__` 与可调用实例**：类实现 `__call__` 后实例可作装饰器，适合带状态的装饰器对象（如限流器持有计数）。
+99% 的情况你只需要写 `__init__`。只有在继承不可变类型（如 `str`、`tuple`）或需要控制实例创建逻辑（如单例模式）时才需要 `__new__`。
 
-**鸭子类型提醒**：装饰器只要「可调用且返回可调用」即可，不限于函数；`classmethod`/`staticmethod` 与装饰器组合时要注意绑定顺序，避免 `self` 错位。
+### 元类——什么时候需要？
+
+大部分场景**不需要元类**。Python 3.6+ 提供了 `__init_subclass__`，简单的子类注册、属性校验用它就够了。真正需要元类的场景：ORM 框架的字段声明、注册表模式、强制接口约束等。
+
+**叠加装饰器的顺序**：`@a @b def f` 等价于 `f = a(b(f))`——离 `def` 近的先执行。
 
 ## 示例代码
 
 ```python
 from functools import wraps
 
+# 带参数的装饰器：重试 N 次
 def retry(times: int):
-    def decorator(func):
-        @wraps(func)
+    def decorator(func):           # 这才是真正的装饰器
+        @wraps(func)               # 保留原函数的名字和文档
         def wrapper(*args, **kwargs):
-            last = None
+            last_error = None
             for _ in range(times):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
-                    last = e
-            raise last
+                    last_error = e
+            raise last_error
         return wrapper
     return decorator
 
+@retry(times=3)                    # 先调用 retry(3) 得到装饰器，再装饰函数
+def fetch_data():
+    pass  # 可能会失败的网络请求
+
+# 用元类实现单例模式
 class Singleton(type):
     _instances = {}
     def __call__(cls, *args, **kwargs):
@@ -60,21 +78,21 @@ class Singleton(type):
             cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
 
-class Foo(metaclass=Singleton):
+class Config(metaclass=Singleton):
     pass
+# Config() is Config()  → True，全局只有一个实例
 ```
 
 ## 面试追问
 
-- **追问 1**：`@classmethod` 装饰的 `__new__` 与实例化流程的关系？
-- **追问 2**：`functools.lru_cache` 作为装饰器如何实现？与手写缓存装饰器的线程安全注意点？
-- **追问 3**：元类与类装饰器都能改类定义，选型上何时用元类、何时用简单类装饰器？
-- **追问 4**：`type(name, bases, dict)` 三参数形式与 `class` 语句等价性？元类中修改 `namespace` 与类装饰器修改类对象的时机差？
+- **面试官可能会这样问你**：`functools.lru_cache` 的原理？它线程安全吗？（内部用字典缓存结果，CPython 下有 GIL 保护的基本线程安全，但多进程环境下缓存不共享）
+- **面试官可能会这样问你**：元类和类装饰器都能修改类，怎么选？（能用类装饰器或 `__init_subclass__` 解决就不用元类——元类更强大但也更难理解和维护）
+- **面试官可能会这样问你**：`@decorator` 和 `@decorator()` 有什么区别？（前者直接把函数传给 decorator；后者先调用 `decorator()` 返回真正的装饰器，再把函数传进去——少写括号或多写括号都会报错）
+- **面试官可能会这样问你**：`__init__` 能返回值吗？（不能！必须返回 None，实例是由 `__new__` 创建的）
 
 ## 常见误区
 
-- 不用 `wraps` 导致 **help()、栈追踪、单测 mock** 指向错误的函数名与文档。
-- 认为 `__init__` 返回实例——`__init__` 必须返回 `None`，实例由 `__new__` 创建。
-- 滥用元类增加阅读成本；多数需求用**类装饰器**或 `__init_subclass__`（Python 3.6+）即可。
-- 装饰器写成「调用形式」`@decorator()` 与无参 `@decorator` 混淆——前者返回的是**真正的装饰器**，后者装饰器本身需直接接收被装饰对象。
-- 在元类 `__new__` 中忘记调用 `super().__new__` 或错误构造 `namespace`，导致**元类冲突**（metaclass conflict）或多重继承时 MRO 与元类不兼容。
+- **很多人会搞混的地方**：不用 `@wraps`——调试时函数名变成 wrapper，`help()` 和单测 mock 都出问题。
+- **很多人会搞混的地方**：以为 `__init__` 创建实例——`__init__` 只是初始化，实例是 `__new__` 创建的。
+- **很多人会搞混的地方**：滥用元类——90% 的需求用类装饰器或 `__init_subclass__` 就能搞定，元类只会增加阅读成本。
+- **很多人会搞混的地方**：`@decorator` 和 `@decorator()` 搞混——前者的 decorator 直接接收函数，后者需要 decorator() 先返回一个真正的装饰器。

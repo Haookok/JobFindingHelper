@@ -6,39 +6,50 @@
 
 ## 核心概念
 
-**Transformer** 完全基于注意力机制，摒弃 RNN/CNN 的序列归纳偏置，通过堆叠 **Self-Attention** 与 **前馈网络（FFN）** 建模 token 间依赖。经典 **Encoder-Decoder** 中：Encoder 对源序列双向编码；Decoder 自回归生成目标序列，并通过 **Cross-Attention** 读取 Encoder 输出。**Scaled Dot-Product Attention** 用查询 **Q**、键 **K**、值 **V** 计算加权组合；**Multi-Head Attention（MHA）** 在子空间并行多组 Q/K/V 再拼接投影，增强表达能力。
+你可以把 **Transformer** 想象成一台超级高效的"阅读理解机器"。它的核心技能只有一个——**注意力（Attention）**。
 
-训练时常对注意力权重或残差路径施加 **Dropout** 防过拟合；推理阶段关闭 Dropout。归一化除 **LayerNorm** 外，许多 LLM 采用 **RMSNorm**（仅按均方根缩放，无 mean center），计算更省且实践中常与 Pre-LN 搭配稳定深层训练。
+传统的 RNN 读句子就像你一个字一个字念课文，念到后面就忘了前面说啥了。而 Transformer 不一样，它就像**同时把一整页纸摊开看**，每个词都能一眼看到所有其他词，然后自己判断"我应该重点关注哪几个词"。
+
+具体来说，Transformer 靠**自注意力（Self-Attention）** 让每个词去"打听"其他所有词跟自己的关系，再靠 **前馈网络（FFN）** 对每个词做独立的深加工。把这两步叠很多层，就能理解非常复杂的语言。
 
 ## 详细解析
 
-**Encoder 单层**：`Self-Attention → 残差+Norm → FFN → 残差+Norm`。**Decoder 单层**：`Masked Self-Attention`（禁止看到未来位置）→ 残差+Norm → `Encoder-Decoder Attention`（Q 来自 Decoder，K/V 来自 Encoder）→ 残差+Norm → FFN → 残差+Norm。原始论文为 **Post-LN**（子层后 LayerNorm）；许多大模型采用 **Pre-LN**（子层前 Norm），训练更稳定。
+### 注意力到底在干嘛？——Q、K、V 的大白话
 
-**Self-Attention 计算**：对输入 \(X\) 做线性映射得 \(Q=XW^Q, K=XW^K, V=XW^V\)。注意力权重 \(\text{softmax}(QK^\top/\sqrt{d_k})V\)。**除以 \(\sqrt{d_k}\)** 的原因：\(d_k\) 增大时 \(q\cdot k\) 方差近似线性增长，softmax 进入极端区域梯度变小；缩放使内积分布更温和，与方差归一化直觉一致。
+想象你在图书馆找书：你脑子里有个**问题（Query）**——"我想找关于猫的书"；书架上每本书有个**标签（Key）**——"动物""烹饪""历史"；标签匹配上了，你就把那本书的**内容（Value）** 拿来读。
 
-**Multi-Head**：将 \(d_{\text{model}}\) 拆成 \(h\) 个头，每头维度 \(d_k=d_{\text{model}}/h\)，各头独立注意力后 **Concat** 再经 \(W^O\) 融合。等价于在多个表示子空间中捕获不同关系（语法、指代、长距依赖等）。
+Self-Attention 就是这个过程：每个词同时扮演"提问者"和"被查的书"。它会把自己变成 Q、K、V 三个向量（通过三个不同的线性变换），然后用 Q 去跟所有词的 K 算"匹配分数"，分数高的词的 V 就会被更多地关注。
 
-**位置编码**：（1）**正弦/余弦固定编码**：不同频率正弦函数，使模型能外推相对距离；不可学习但可泛化长度。（2）**RoPE（旋转位置编码）**：将 Q/K 在复数/二维旋转意义上乘以位置相关相位，相对位置体现为旋转差，利于外推与相对位置归纳偏置。（3）**ALiBi**：在注意力 logits 上按距离加 **线性负偏置**，无显式位置嵌入即可抑制远端注意力，常配合外推训练。
+**为啥要除以 √d_k？** 因为向量维度高了之后，点积的数值会特别大，softmax 就会变成"非 0 即 1"的极端状态，梯度几乎为零学不动。除以 √d_k 就是把数值拉回到温和的范围，好比考试分数太高了做个开根号让分布更合理。
 
-**FFN**：通常两层线性，中间 **ReLU/GELU/SwiGLU**，隐层维度常为 \(4d_{\text{model}}\)。对每个 token 独立作用，提供非线性与通道混合。
+### Multi-Head：多个角度同时看
 
-**架构对比**：**Encoder-Only**（如 BERT）双向上下文，适合分类、检索、表示学习，不原生自回归生成。**Decoder-Only**（如 GPT）因果掩码，适合生成与统一「下一 token」目标，是当前 LLM 主流。**Encoder-Decoder**（如 T5、BART）显式区分源/目标，适合翻译、摘要等 seq2seq；部分任务也可用 Decoder-Only + 指令格式替代。
+一个注意力头可能只关注"语法关系"，另一个关注"语义相似"，再一个关注"距离远近"。**Multi-Head Attention** 就是开多个"视角"并行工作，最后把各视角的发现拼起来综合。具体做法是把 d_model 维度切成 h 份，每份独立做注意力，最后拼接再过一个线性层融合。
 
-**复杂度**：Self-Attention 对序列长度 \(n\) 为 \(O(n^2)\)（相对全连接仍有结构先验）；长上下文需稀疏注意力、线性注意力或硬件友好内核等折中。
+### 位置编码：告诉模型"谁在前谁在后"
 
-**与推理实现的衔接（口述）**：Decoder 自回归生成时，历史 token 的 K/V 可 **缓存** 避免重复计算；Cross-Attention 中 Encoder 侧 K/V 在 Encoder 只跑一遍后亦可复用。 Encoder-Only 做整段编码时常一次前向，缓存策略与生成式 Decoder 不同。面试若被追问「Attention \(O(n^2)\) 为何仍比 RNN 长依赖好」，可答：并行度、任意位置一步可达、梯度路径更短，但代价是二次方内存与算力。
+Attention 本身是无序的——"猫吃鱼"和"鱼吃猫"在它眼里一样。所以需要额外注入位置信息：
+- **正弦/余弦编码**：用不同频率的波形表示位置，像音乐里不同频率的音符叠加
+- **RoPE（旋转位置编码）**：把位置信息"旋转"进 Q 和 K，让相对距离自然体现，目前主流大模型最常用
+- **ALiBi**：简单粗暴——离得越远，注意力分数扣分越多，不需要专门的位置向量
 
-**FFN 变体**：**SwiGLU** 等门控结构（带门控线性单元）在大模型中常见，相比单激活函数两层 MLP，能以略高参数换更好拟合与非线性路径；与 Attention 形成「稀疏交互 + 逐 token 通道混合」分工。
+### 三种架构风格
 
-**初始化与深度**：残差连接使信号可沿捷径传播，配合 Norm 与合理初始化，数百层仍可训练。口述题可强调 **Attention 负责 token 间路由，FFN 负责存储与变换特征** 的极简分工。
+| 架构 | 代表 | 特点 | 适合场景 |
+|------|------|------|----------|
+| Encoder-Only | BERT | 双向看全文，做填空题训练 | 分类、检索、语义理解 |
+| Decoder-Only | GPT | 只能看前面的词，一个接一个往后写 | 文本生成、对话（当前主流） |
+| Encoder-Decoder | T5 | 先读完原文再翻译/改写 | 翻译、摘要 |
 
-**掩码细节**：padding mask 将 pad 位置 logits 置为 \(-\infty\)，softmax 后权重为 0；因果 mask 保留下三角。实现时需注意 **半精度下 -inf 与 nan**（可用大负数替代）。**注意力 dropout** 在训练时对 softmax 后权重随机丢弃，推理关闭。
+### Pre-LN vs Post-LN
 
-**长度外推实践**：训练 4k、推理 8k 时，绝对位置嵌入易崩；RoPE/ALiBi 相对更稳但仍可能 **困惑度上升**，常配合 **NTK-aware 插值**、**位置截断微调** 等工程手段（具体名称为社区经验，面试提「需二次微调或插值」即可）。
+原版 Transformer 是"先算子层，再做归一化"（Post-LN），但层数一多容易训练不稳。现在大多数大模型用 **Pre-LN**——"先归一化，再算子层"，就像每次干活前先整理下工具，干起来更顺。很多模型还用 **RMSNorm** 替代 LayerNorm，计算更快，效果差不多。
 
-**对比 CNN/RNN（精简）**：CNN 局部感受野，扩张卷积才可扩大范围；RNN 顺序计算难并行；Attention 一步全局依赖但 \(O(n^2)\)。口述时一句「并行度与全局依赖的代价是二次复杂度」收尾。
+### FFN 和掩码
 
-**BERT vs GPT 训练目标**：BERT **MLM/NSP**（NSP 现较少用）学双向填空；GPT **CLM** 学因果生成。影响：同样规模下 Encoder-Only 更擅判别式中间表示，Decoder-Only 更擅续写与统一 chat。
+**FFN** 就是两层全连接网络，对每个词独立做"深加工"。可以理解为 Attention 负责"词之间互相交流"，FFN 负责"每个词自己消化吸收"。目前大模型常用 **SwiGLU** 激活函数，效果更好。
+
+**因果掩码（Causal Mask）**：在 Decoder 里，生成第 5 个词时不能偷看第 6、7、8 个词（那还没生成呢），所以用一个下三角矩阵把"未来"遮住。**Padding Mask** 则是把填充符的位置遮住，防止它们参与注意力计算。
 
 ## 示例代码
 
@@ -50,53 +61,55 @@ import torch.nn.functional as F
 
 
 class ScaledDotProductAttention(nn.Module):
-    """单头缩放点积注意力（教学用）。"""
+    """单头缩放点积注意力"""
 
     def __init__(self, d_model: int, d_k: int):
         super().__init__()
         self.d_k = d_k
+        # 三个线性变换：把输入分别映射成 Q、K、V
         self.w_q = nn.Linear(d_model, d_k, bias=False)
         self.w_k = nn.Linear(d_model, d_k, bias=False)
         self.w_v = nn.Linear(d_model, d_k, bias=False)
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None):
-        # x: [batch, seq, d_model]
+        # x: [batch, seq_len, d_model]
         q, k, v = self.w_q(x), self.w_k(x), self.w_v(x)
+        # Q 和 K 算匹配分数，再除以 √d_k 防止数值爆炸
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         if attn_mask is not None:
+            # 被遮住的位置设成负无穷，softmax 后变成 0
             scores = scores.masked_fill(attn_mask == 0, float("-inf"))
         attn = F.softmax(scores, dim=-1)
+        # 用注意力权重对 V 加权求和，得到最终输出
         return torch.matmul(attn, v), attn
 
 
-# 因果掩码示例：下三角为 1，禁止看见未来 token
 def causal_mask(seq_len: int, device):
+    """因果掩码：下三角为 1，上三角（未来位置）为 0"""
     return torch.tril(torch.ones(seq_len, seq_len, device=device))
 
 
 batch, seq, d_model, d_k = 2, 8, 64, 16
 x = torch.randn(batch, seq, d_model)
-mha_placeholder = nn.MultiheadAttention(d_model, num_heads=4, batch_first=True)
-# PyTorch MHA 内部已实现缩放与多头拼接
-out, _ = mha_placeholder(x, x, x, attn_mask=None, is_causal=True)
+# PyTorch 内置的 Multi-Head Attention，已封装好多头拆分和拼接
+mha = nn.MultiheadAttention(d_model, num_heads=4, batch_first=True)
+out, _ = mha(x, x, x, attn_mask=None, is_causal=True)
 ```
 
-**运行说明**：需安装 `torch`；`is_causal=True` 适用于 Decoder 自注意力场景。若需显式 padding mask，可构造 `attn_mask` 与 `key_padding_mask`（以文档为准）。
+**运行说明**：需安装 `torch`；`is_causal=True` 自动生成因果掩码，适用于 Decoder 场景。
 
 ## 面试追问
 
-- **追问 1**：为什么用 \(\sqrt{d_k}\) 而不是别的常数？与 LayerNorm、Xavier 初始化在「控制激活尺度」上如何联系起来口述？
-- **追问 2**：Pre-LN 与 Post-LN 在梯度流、深层堆叠稳定性上的差异？哪些大模型系列典型采用 Pre-LN？
-- **追问 3**：RoPE 与绝对位置嵌入、ALiBi 在长文本外推上的异同？推理时序列长于训练时各自可能出什么问题？
-- **追问 4**：Decoder-Only 模型如何做「理解类」任务（分类、相似度）？与 Encoder-Only 在 inductive bias 上的取舍？
-- **追问 5**：Cross-Attention 中 Q、K、V 分别来自哪里？若 Encoder 输出加池化做「句子向量」，和 CLS 表征相比各适用什么场景？
+- **面试官可能会这样问你**：为啥缩放因子偏偏是 √d_k？跟 Xavier 初始化"控制激活尺度"的思路有什么联系？
+- **面试官可能会这样问你**：Pre-LN 和 Post-LN 在深层模型训练时表现有啥区别？为啥现在大模型几乎都用 Pre-LN？
+- **面试官可能会这样问你**：RoPE 和 ALiBi 在处理超长文本（比训练时更长）时各有什么问题？
+- **面试官可能会这样问你**：GPT 这种 Decoder-Only 模型也能做分类任务吗？跟 BERT 比有什么取舍？
+- **面试官可能会这样问你**：Cross-Attention 里 Q、K、V 分别从哪来？跟 Self-Attention 有啥区别？
 
 ## 常见误区
 
-- 把 **Self-Attention** 说成「每个词和所有词做全连接」而忽略 **Q/K/V 线性投影** 与 **缩放**——权重由相似度动态产生，不是固定全连接。
-- 认为 **Multi-Head** 只是「算多次同样的 attention」——头之间参数不共享，且通过 \(W^O\) 融合子空间信息。
-- 混淆 **Encoder-Decoder** 与 **仅用 Decoder 做 seq2seq**（如前缀作为 prompt）——训练目标与对齐方式不同，不能简单等同。
-- 忽略 **因果掩码** 在 Decoder 中的必要性，误以为 Decoder 也能像 BERT 一样双向看全句。
-- 将 **位置编码** 仅理解为「加一个向量」——RoPE/ALiBi 是融入注意力几何的不同机制，外推行为差异很大。
-- 认为 **LayerNorm 与 BatchNorm** 在 Transformer 里可互换——NLP 变长序列与 token 维度上，LN 更自然；BN 在序列模型中易因 batch 统计不稳而效果差（早期也有工作探讨，但非主流）。
-- 忽略 **padding mask 与因果 mask 同时存在** 时的合并方式——错误掩码会导致注意力看见 pad 或看见未来 token。
+- **很多人会搞混的地方**：把 Self-Attention 说成"每个词跟所有词做全连接"——其实权重是动态算出来的（取决于 Q 和 K 的相似度），跟固定权重的全连接层完全不一样。
+- **很多人会搞混的地方**：以为 Multi-Head 就是"同一个注意力算好几遍"——每个头的 Q/K/V 参数完全不同，看的是不同"角度"的信息。
+- **很多人会搞混的地方**：以为 Decoder 也能像 BERT 一样双向看全文——不行，因果掩码保证它只能看已生成的部分。
+- **很多人会搞混的地方**：觉得位置编码就是"加个向量"这么简单——RoPE 是融入旋转几何的，ALiBi 是直接改注意力分数的，外推能力差很多。
+- **很多人会搞混的地方**：把 LayerNorm 和 BatchNorm 当成可以互换的——在 NLP 变长序列场景下，LN 按每个样本归一化，更稳定；BN 依赖 batch 统计量，效果通常不好。
