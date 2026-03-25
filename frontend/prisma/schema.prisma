@@ -1,0 +1,81 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model KnowledgePoint {
+  id        String   @id @default(cuid())
+  title     String
+  category  String
+  subcategory String?
+  difficulty String   @default("基础")
+  content   String
+  tags      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  questions Question[]
+  reviews   ReviewRecord[]
+}
+
+model Question {
+  id              String   @id @default(cuid())
+  knowledgePointId String?
+  category        String
+  subcategory     String?
+  difficulty      String   @default("基础")
+  question        String
+  keyPoints       String
+  referenceAnswer String
+  followUps       String
+  commonMistakes  String?
+  tags            String
+  createdAt       DateTime @default(now())
+
+  knowledgePoint KnowledgePoint? @relation(fields: [knowledgePointId], references: [id])
+  interviewQuestions InterviewQuestion[]
+}
+
+model InterviewSession {
+  id        String   @id @default(cuid())
+  position  String
+  company   String?
+  difficulty String  @default("中等")
+  status    String   @default("进行中")
+  score     Float?
+  feedback  String?
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+
+  questions InterviewQuestion[]
+}
+
+model InterviewQuestion {
+  id          String   @id @default(cuid())
+  sessionId   String
+  questionId  String?
+  stage       String
+  question    String
+  userAnswer  String?
+  aiEvaluation String?
+  score       Float?
+  orderIndex  Int
+
+  session     InterviewSession @relation(fields: [sessionId], references: [id])
+  questionRef Question?        @relation(fields: [questionId], references: [id])
+}
+
+model ReviewRecord {
+  id              String   @id @default(cuid())
+  knowledgePointId String
+  quality         String
+  notes           String?
+  reviewedAt      DateTime @default(now())
+  nextReviewAt    DateTime?
+
+  knowledgePoint KnowledgePoint @relation(fields: [knowledgePointId], references: [id])
+}

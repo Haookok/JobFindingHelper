@@ -1,0 +1,29 @@
+---
+description: Next.js 前端开发规范
+globs: frontend/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Next.js 开发规范
+
+## 组件模式
+- 默认使用 React Server Components，仅在需要交互时添加 `'use client'`
+- 最小化 `useEffect` 和 `useState`，优先用 Server Actions 处理数据
+
+## 页面结构
+- 每个 `page.tsx` 必须配套 `loading.tsx`（骨架屏）和 `error.tsx`（错误边界）
+- `error.tsx` 必须是 client component，包含 error 和 reset props
+
+## 数据变更
+- Server Actions 中执行 create/update/delete 后必须调用 `revalidatePath()`
+- 不依赖客户端 refetch
+
+## UI 规范
+- 使用 shadcn/ui 组件库，通过 `cn()` 合并 Tailwind class
+- 响应式设计：移动端优先，使用 `sm:` `md:` `lg:` 断点
+- 颜色使用 CSS 变量（`hsl(var(--primary))`），支持深色模式
+
+## TypeScript
+- 严格模式，无 `any`
+- Props 用 `interface` 定义，命名 `XxxProps`
+- 布尔变量用 `is`/`has`/`should` 前缀

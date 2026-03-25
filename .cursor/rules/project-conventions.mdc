@@ -1,0 +1,29 @@
+---
+description: 项目通用规范，适用于所有文件和会话
+alwaysApply: true
+---
+
+# 项目通用规范
+
+## 语言
+- 代码注释使用中文
+- 文档和 README 使用中文
+- Git commit message 使用英文，遵循 Conventional Commits 格式：`type(scope): description`
+  - type: feat / fix / docs / style / refactor / test / chore
+  - scope: frontend / backend / knowledge / infra
+
+## 环境变量
+- 敏感信息一律放 `.env`，绝不提交到 Git
+- 新增环境变量时同步更新 `.env.example`（不含真实值）
+
+## 代码风格
+- **Python**: Black 格式化，Ruff lint，行宽 88
+- **TypeScript**: ESLint + Prettier，分号可选，单引号
+
+## 文件组织
+- 每个模块一个目录，内含 `index.ts` 或 `__init__.py` 作为入口
+- 测试文件与源文件同目录，命名 `*.test.ts` 或 `test_*.py`
+
+## 依赖管理
+- Python 依赖写入 `requirements.txt`，锁定主版本号
+- Node 依赖通过 `npm install` 管理，提交 `package-lock.json`
