@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { SearchBar } from "@/components/search-bar";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -55,6 +56,9 @@ export default function RootLayout({
                 </Link>
               ))}
             </nav>
+            <div className="ml-auto">
+              <SearchBar />
+            </div>
           </div>
         </header>
         <main className="flex-1">{children}</main>

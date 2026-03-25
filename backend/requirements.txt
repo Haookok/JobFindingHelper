@@ -6,3 +6,5 @@ openai>=1.60.0
 python-multipart>=0.0.18
 aiofiles>=24.1.0
 python-dotenv>=1.0.0
+whoosh>=2.7.4
+jieba>=0.42.1
