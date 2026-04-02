@@ -39,8 +39,9 @@ function SearchContent() {
     setIsLoading(true);
     setHasSearched(true);
     try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const res = await fetch(
-        `http://localhost:8000/api/search/query?q=${encodeURIComponent(q)}&limit=30`
+        `${apiBase}/api/search/query?q=${encodeURIComponent(q)}&limit=30`
       );
       const data = await res.json();
       if (data.code === 200) {
